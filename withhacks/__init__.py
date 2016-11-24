@@ -308,7 +308,7 @@ class CaptureFunction(CaptureBytecode):
     Here's a quick example:
 
         >>> with CaptureFunction(("message","times",)) as f:
-        ...     for i in xrange(times):
+        ...     for i in range(times):
         ...         print(message)
         ...
         >>> f.function("hello world",2)
@@ -361,8 +361,8 @@ class CaptureLocals(CaptureBytecode):
         ...     x = 7
         ...     y = 8
         ...
-        >>> f.locals
-        {'y': 8, 'x': 7}
+        >>> f.locals == {'y': 8, 'x': 7}
+        True
         >>>
 
     """
@@ -430,7 +430,7 @@ class CaptureModifiedLocals(WithHack):
     def __exit__(self,*args):
         frame = self._get_context_frame()
         self.locals = {}
-        for (name,value) in frame.f_locals.iteritems():
+        for (name,value) in frame.f_locals.items():
             if value is self:
                 pass
             elif name not in self.__pre_locals:
@@ -454,10 +454,10 @@ class xargs(CaptureOrderedLocals):
         ...         return (i % 2) == 0
         ...     items = range(10)
         ...
-        >>> print(evens)
+        >>> print(list(evens))
         [0, 2, 4, 6, 8]
         >>>
-      
+
     """
 
     def __init__(self,func,*args,**kwds):
@@ -522,7 +522,7 @@ class namespace(CaptureBytecode):
         ...     copyright2 = copyright
         ...
         >>> sys.testing
-        "hello"
+        'hello'
         >>> sys.copyright2 == sys.copyright
         True
 
@@ -628,7 +628,7 @@ class keyspace(namespace):
         ...     copyright2 = copyright
         ...
         >>> sys.testing
-        "hello"
+        'hello'
         >>> sys.copyright2 == sys.copyright
         True
 
