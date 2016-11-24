@@ -35,7 +35,6 @@ since the official byteplay distribution doesn't support Python 2.6, a local
 version with appropriate patches is included in this module.
 
 """
-
 from __future__ import with_statement
 
 __ver_major__ = 0
@@ -310,7 +309,7 @@ class CaptureFunction(CaptureBytecode):
 
         >>> with CaptureFunction(("message","times",)) as f:
         ...     for i in xrange(times):
-        ...         print message
+        ...         print(message)
         ...
         >>> f.function("hello world",2)
         hello world
@@ -466,7 +465,7 @@ class xargs(CaptureOrderedLocals):
         ...         return (i % 2) == 0
         ...     items = range(10)
         ...
-        >>> print evens
+        >>> print(evens)
         [0, 2, 4, 6, 8]
         >>>
       
@@ -500,7 +499,7 @@ class xkwargs(CaptureLocals,CaptureBytecode):
         >>> with xkwargs(calculate,b=2) as result:
         ...     a = 5
         ...
-        >>> print result
+        >>> print(result)
         10
 
     """
@@ -533,9 +532,9 @@ class namespace(CaptureBytecode):
         ...     testing = "hello"
         ...     copyright2 = copyright
         ...
-        >>> print sys.testing
-        hello
-        >>> print sys.copyright2 == sys.copyright
+        >>> sys.testing
+        "hello"
+        >>> sys.copyright2 == sys.copyright
         True
 
     If no object is passed to the constructor, an empty object is created and
@@ -545,7 +544,7 @@ class namespace(CaptureBytecode):
         ...     x = 1
         ...     y = x + 4
         ...
-        >>> print ns.x; print ns.y
+        >>> print(ns.x); print(ns.y)
         1
         5
 
@@ -639,9 +638,9 @@ class keyspace(namespace):
         ...     testing = "hello"
         ...     copyright2 = copyright
         ...
-        >>> print sys.testing
-        hello
-        >>> print sys.copyright2 == sys.copyright
+        >>> sys.testing
+        "hello"
+        >>> sys.copyright2 == sys.copyright
         True
 
     If no object is passed to the constructor, an empty dict is created and
@@ -651,7 +650,7 @@ class keyspace(namespace):
         ...     x = 1
         ...     y = x + 4
         ...
-        >>> print ks["x"]; print ks["y"]
+        >>> print(ks["x"]); print(ks["y"])
         1
         5
 
