@@ -566,6 +566,7 @@ class namespace(CaptureBytecode):
             offset += len(repl) - 1
         #  Create function object to do the manipulation
         funcode.argnames = ("_[namespace]",)
+        funcode.argcount = 1
         funcode.name = "<withhack>"
         gs = self._get_context_frame().f_globals
         func = types.FunctionType(funcode.to_code(),gs)
