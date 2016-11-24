@@ -203,6 +203,57 @@ class CaptureBytecode(WithHack):
         self.bytecode = bc
         return super(CaptureBytecode,self).__exit__(*args)
 
+    def _run_as_clause(self, value):
+        """
+        Run the as clause, setting the target expression to `value`
+
+        This handles arbitrary as clause expressions, like
+
+            with somehack as d['item'][i].foo().bar:
+                pass
+        """
+        assert self._as_clause
+
+        if len(self._as_clause) == 1:
+            first = self._as_clause[0]
+            # store_fast has to be handled specially
+            if first.name == 'STORE_FAST':
+                self._set_context_locals({first.arg: value})
+                return
+            # pop_top is a no-op
+            elif first.name == 'POP_TOP':
+                return
+
+        # if somehow there's a STORE_FAST in there, it's not going to work
+        if any(instr.name == 'STORE_FAST' for instr in self._as_clause):
+            raise NotImplementedError("Cannot handle this as clause")
+
+        frame = self._get_context_frame()
+
+        # prepend a LOAD_CONST with a dummy value
+        dummy = object()
+        code = copy.copy(self._as_clause)
+        code[:0] = [bytecode.Instr('LOAD_CONST', dummy)]
+        code.extend([
+            bytecode.Instr('LOAD_CONST', None),
+            bytecode.Instr('RETURN_VALUE')
+        ])
+
+        # configure the object
+        code.argcount = 0
+        code.name = '<as clause>'
+        code.flags &= ~inspect.CO_NEWLOCALS
+
+        # fiddle with variable lookups
+        self._change_lookups(code, locals=frame.f_locals)
+
+        # now swap out the constant (which would be rejected by to_concrete_bytecode)
+        concrete_code = code.to_concrete_bytecode()
+        concrete_code.consts[concrete_code.consts.index(dummy)] = value
+
+        # run the assignment in the context frame
+        raw_code = concrete_code.to_code()
+        exec(raw_code, frame.f_globals, frame.f_locals)
 
 
     def _change_lookups(self, code, *, args=(), locals=()):
@@ -432,8 +483,7 @@ class xargs(CaptureOrderedLocals):
         args_ = [arg for arg in self.__args]
         args_.extend([arg for (nm,arg) in self.locals])
         retval = self.__func(*args_,**self.__kwds)
-        if self.as_name is not None:
-            self._set_context_locals({self.as_name:retval})
+        self._run_as_clause(retval)
         return retcode
 
 
@@ -466,8 +516,7 @@ class xkwargs(CaptureLocals,CaptureBytecode):
         kwds = self.__kwds.copy()
         kwds.update(self.locals)
         retval = self.__func(*self.__args,**kwds)
-        if self.as_name is not None:
-            self._set_context_locals({self.as_name:retval})
+        self._run_as_clause(retval)
         return retcode
 
 
@@ -512,56 +561,69 @@ class namespace(CaptureBytecode):
     def __exit__(self,*args):
         frame = self._get_context_frame()
         retcode = super(namespace,self).__exit__(*args)
-        funcode = copy.deepcopy(self.bytecode)
+        # funcode = copy.deepcopy(self.bytecode)
+        funcode = copy.copy(self.bytecode)
         #  Ensure it's a properly formed func by always returning something
-        funcode.code.append((LOAD_CONST,None))
-        funcode.code.append((RETURN_VALUE,None))
+        funcode.append(bytecode.Instr('LOAD_CONST', None))
+        funcode.append(bytecode.Instr('RETURN_VALUE'))
         #  Switch LOAD/STORE/DELETE_FAST/NAME to LOAD/STORE/DELETE_ATTR
         to_replace = []
-        for (i,(op,arg)) in enumerate(funcode.code):
-            repl = self._replace_opcode((op,arg),frame)
+        for i, instr in enumerate(funcode):
+            repl = self._replace_opcode(instr, frame)
             if repl:
-                to_replace.append((i,repl))
+                to_replace.append((i, repl))
         offset = 0
-        for (i,repl) in to_replace:
-            funcode.code[i+offset:i+offset+1] = repl
+        for i, repl in to_replace:
+            funcode[i+offset:i+offset+1] = repl
             offset += len(repl) - 1
         #  Create function object to do the manipulation
-        funcode.args = ("_[namespace]",)
-        funcode.varargs = False
-        funcode.varkwargs = False
+        funcode.argnames = ("_[namespace]",)
         funcode.name = "<withhack>"
         gs = self._get_context_frame().f_globals
-        func = new.function(funcode.to_code(),gs)
+        func = types.FunctionType(funcode.to_code(),gs)
         #  Execute bytecode in context of namespace
         retval = func(self.namespace)
-        if self.as_name is not None:
-            self._set_context_locals({self.as_name:self.namespace})
+
+        self._run_as_clause(self.namespace)
+
         return retcode
 
-    def _replace_opcode(self,(op,arg),frame):
-        if op in (STORE_FAST,STORE_NAME,):
-            return [(LOAD_FAST,"_[namespace]"),(STORE_ATTR,arg)]
-        if op in (DELETE_FAST,DELETE_NAME,):
-            return [(LOAD_FAST,"_[namespace]"),(DELETE_ATTR,arg)]
-        if op in (LOAD_FAST,LOAD_NAME,LOAD_GLOBAL,LOAD_DEREF):
+    def _replace_opcode(self, instr, frame, *,
+                        _load=lambda i: [bytecode.Instr('LOAD_ATTR', i.arg)],
+                        _store=lambda i: [bytecode.Instr('STORE_ATTR', i.arg)],
+                        _delete=lambda i: [bytecode.Instr('DELETE_ATTR', i.arg)],
+                        _exc=AttributeError):
+        Instr = bytecode.Instr
+        Label = bytecode.Label
+
+        if instr.name in ('STORE_FAST','STORE_NAME',):
+            return [Instr('LOAD_FAST',"_[namespace]")] + _store(instr)
+        if instr.name in ('DELETE_FAST','DELETE_NAME',):
+            return [Instr('LOAD_FAST',"_[namespace]")] + _delete(instr)
+        if instr.name in ('LOAD_FAST','LOAD_NAME','LOAD_GLOBAL','LOAD_DEREF'):
             excIn = Label(); excOut = Label(); end = Label()
-            return [(SETUP_EXCEPT,excIn),
-                        (LOAD_FAST,"_[namespace]"),(LOAD_ATTR,arg),
-                        (STORE_FAST,"_[ns_value]"),
-                        (POP_BLOCK,None),(JUMP_FORWARD,end),
-                    (excIn,None),
-                        (DUP_TOP,None),(LOAD_CONST,AttributeError),
-                        (COMPARE_OP,"exception match"),(JUMP_IF_FALSE,excOut),
-                        (POP_TOP,None),(POP_TOP,None),
-                        (POP_TOP,None),(POP_TOP,None),
-                        (LOAD_CONST,load_name),(LOAD_CONST,frame),
-                        (LOAD_CONST,arg),(CALL_FUNCTION,2),
-                        (STORE_FAST,"_[ns_value]"),(JUMP_FORWARD,end),
-                    (excOut,None),
-                        (POP_TOP,None),(END_FINALLY,None),
-                    (end,None),
-                        (LOAD_FAST,"_[ns_value]")]
+            # try:
+            #     x = namespace.<attr>
+            # except AttributeError:
+            #     x = load_name(frame, '<attr>')
+            return [Instr('SETUP_EXCEPT',excIn),
+                        Instr('LOAD_FAST',"_[namespace]")] + _load(instr) + [
+                        Instr('STORE_FAST',"_[ns_value]"),
+                        Instr('POP_BLOCK'), Instr('JUMP_FORWARD',end),
+                    excIn,
+                        Instr('DUP_TOP'), Instr('LOAD_CONST',_exc),
+                        Instr('COMPARE_OP',bytecode.Compare.EXC_MATCH),
+                        Instr('POP_JUMP_IF_FALSE',excOut), Instr('POP_TOP'),
+                        Instr('POP_TOP'), Instr('POP_TOP'),
+                        Instr('LOAD_CONST',load_name), Instr('LOAD_CONST',frame),
+                        Instr('LOAD_CONST',instr.arg), Instr('CALL_FUNCTION',2),
+                        Instr('STORE_FAST',"_[ns_value]"),
+                        Instr('POP_EXCEPT'),
+                        Instr('JUMP_FORWARD',end),
+                    excOut,
+                        Instr('END_FINALLY'),
+                    end,
+                        Instr('LOAD_FAST',"_[ns_value]")]
         return None
 
 
@@ -600,31 +662,12 @@ class keyspace(namespace):
             ns = {}
         super(keyspace,self).__init__(ns)
 
-    def _replace_opcode(self,(op,arg),frame):
-        if op in (STORE_FAST,STORE_NAME,):
-            return [(LOAD_FAST,"_[namespace]"),(LOAD_CONST,arg),
-                    (STORE_SUBSCR,arg)]
-        if op in (DELETE_FAST,DELETE_NAME,):
-            return [(LOAD_FAST,"_[namespace]"),(LOAD_CONST,arg),
-                    (DELETE_SUBSCR,arg)]
-        if op in (LOAD_FAST,LOAD_NAME,LOAD_GLOBAL,LOAD_DEREF):
-            excIn = Label(); excOut = Label(); end = Label()
-            return [(SETUP_EXCEPT,excIn),
-                        (LOAD_FAST,"_[namespace]"),(LOAD_CONST,arg),
-                        (BINARY_SUBSCR,arg),
-                        (STORE_FAST,"_[ns_value]"),
-                        (POP_BLOCK,None),(JUMP_FORWARD,end),
-                    (excIn,None),
-                        (DUP_TOP,None),(LOAD_CONST,KeyError),
-                        (COMPARE_OP,"exception match"),(JUMP_IF_FALSE,excOut),
-                        (POP_TOP,None),(POP_TOP,None),
-                        (POP_TOP,None),(POP_TOP,None),
-                        (LOAD_CONST,load_name),(LOAD_CONST,frame),
-                        (LOAD_CONST,arg),(CALL_FUNCTION,2),
-                        (STORE_FAST,"_[ns_value]"),(JUMP_FORWARD,end),
-                    (excOut,None),
-                        (POP_TOP,None),(END_FINALLY,None),
-                    (end,None),
-                        (LOAD_FAST,"_[ns_value]")]
-        return None
+    def _replace_opcode(self, instr, frame):
+        Instr = bytecode.Instr
+        return super()._replace_opcode(instr, frame,
+            _load=lambda i: [Instr('LOAD_CONST', i.arg), Instr('BINARY_SUBSCR')],
+            _store=lambda i: [Instr('LOAD_CONST', i.arg), Instr('STORE_SUBSCR')],
+            _delete=lambda i: [Instr('LOAD_CONST', i.arg), Instr('DELETE_SUBSCR')],
+            _exc=KeyError
+        )
 

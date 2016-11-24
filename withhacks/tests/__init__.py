@@ -97,6 +97,18 @@ class TestNamespace(unittest.TestCase):
         self.assertRaises(KeyError,d.__getitem__,"hello")
         self.assertEquals(d["howzitgoin"](),"fine thanks")
 
+    def test_keyspace_save_name(self):
+        d = {'a': [1]}
+        with keyspace() as d['a'][0]:
+            x = 1
+        self.assertEquals(d['a'][0]['x'], 1)
+
+    def test_keyspace_save_global(self):
+        global d
+        with keyspace() as d:
+            x = 1
+        self.assertEquals(d['x'], 1)
+
 
 class TestCaptureFunction(unittest.TestCase):
 
