@@ -7,12 +7,15 @@
 
 from setuptools import setup
 
-import withhacks
-VERSION = withhacks.__version__
+with open('withhacks/__about__.py') as f:
+    exec(f.read())
+
+VERSION = __version__
 
 NAME = "withhacks"
 DESCRIPTION = "building blocks for with-statement-related hackery"
-LONG_DESC = withhacks.__doc__
+with open('README.txt') as f:
+    LONG_DESC = f.read()
 AUTHOR = "Ryan Kelly"
 AUTHOR_EMAIL = "ryan@rfk.id.au"
 URL = "http://github.com/rfk/withhacks"
