@@ -8,13 +8,14 @@ from __future__ import with_statement
 
 import sys
 import dis
-import new
+import types
 try:
     import threading
 except ImportError:
     import dummy_threading as threading
 
-from withhacks.byteplay import Code
+from bytecode import Bytecode, ConcreteBytecode, dump_bytecode
+import bytecode
 
 
 __all__ = ["inject_trace_func","extract_code","load_name"]
@@ -92,37 +93,39 @@ def extract_code(frame,start=None,end=None,name="<withhack>"):
     return only a slice of the code.
     """
     code = frame.f_code
-    if start is None:
-        if end is None:
-            code_str = code.co_code[:]
-        else:
-            code_str = code.co_code[:end]
-    else:
-        #  Slicing off opcodes at start means we need to adjust any
-        #  absolute jump targets.
-        if end is None:
-            code_list = [c for c in code.co_code[start:]]
-        else:
-            code_list = [c for c in code.co_code[start:end]]
-        i = 0
-        while i < len(code_list):
-            c = ord(code_list[i])
-            if c in dis.hasjabs:
-                code_list[i+1] = chr(ord(code_list[i+1]) - start)
-                i += 2
-            else:
-                if c >= dis.HAVE_ARGUMENT:
-                    i += 2
-                else:
-                    i += 1
-        code_str = "".join(code_list)
-    new_code = new.code(0, code.co_nlocals, 
-                        code.co_stacksize, code.co_flags,
-                        code_str, code.co_consts,
-                        code.co_names, code.co_varnames,
-                        code.co_filename, name,
-                        frame.f_lineno, code.co_lnotab)
-    return Code.from_code(new_code)
+
+    if start is None: start = 0
+    if end is None: end = len(code.co_code)
+
+    # convert the byte indices into ConcreteBytecode indices
+    start_c = 0
+    end_c = 0
+    at = 0
+    concrete_bc = ConcreteBytecode.from_code(code)
+    for c in concrete_bc:
+        at += c.size
+        if at < start:
+            start_c += 1
+        if at < end:
+            end_c += 1
+
+    # convert the ConcreteBytecode indices into Bytecode indices
+    # assumes that instructions map one-to-one
+    bc = concrete_bc.to_bytecode()
+    start_b = None
+    end_b = None
+    at = 0
+    for i, b in enumerate(bc):
+        if at == start_c:
+            start_b = i
+        if at == end_c:
+            end_b = i
+        if isinstance(b, bytecode.instr.BaseInstr):
+            at += 1
+    assert at == len(concrete_bc)
+
+    bc[:] = bc[start_b:end_b]
+    return bc
 
 
 def load_name(frame,name):

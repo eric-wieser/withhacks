@@ -5,7 +5,7 @@
 #  This script is placed in the public domain.
 #
 
-from distutils.core import setup
+from setuptools import setup
 
 import withhacks
 VERSION = withhacks.__version__
@@ -29,5 +29,6 @@ setup(name=NAME,
       license=LICENSE,
       keywords=KEYWORDS,
       packages=["withhacks","withhacks.tests"],
+      install_requires=['bytecode']
      )
 
