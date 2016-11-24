@@ -420,8 +420,8 @@ class CaptureModifiedLocals(WithHack):
         ...     y = 8
         ...     z = 9
         ...
-        >>> f.locals
-        {'y': 8, 'z': 9}
+        >>> f.locals == {'y': 8, 'z': 9}
+        True
         >>>
 
     This differs from CaptureLocals in that it does not detect variables
