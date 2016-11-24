@@ -368,18 +368,19 @@ class CaptureLocals(CaptureBytecode):
     """
 
     must_execute = True
+    dest_type = dict
 
     def __exit__(self,*args):
         retcode = super(CaptureLocals,self).__exit__(*args)
         frame = self._get_context_frame()
-        self.locals = {}
-        for (op,arg) in self.bytecode.code:
-           if op in (STORE_FAST,STORE_NAME,):
-               self.locals[arg] = frame.f_locals[arg]
+        self.locals = self.dest_type()
+        for instr in self.bytecode:
+           if instr.name in ('STORE_FAST','STORE_NAME'):
+               self.locals[instr.arg] = frame.f_locals[instr.arg]
         return retcode
 
 
-class CaptureOrderedLocals(CaptureBytecode):
+class CaptureOrderedLocals(CaptureLocals):
     """WithHack to capture local variables modified in the block, in order.
 
     When the block exits, the attribute "locals" will be a list containing
@@ -392,23 +393,11 @@ class CaptureOrderedLocals(CaptureBytecode):
         ...     y = 8
         ...
         >>> f.locals
-        [('x', 7), ('y', 8)]
+        OrderedDict([('x', 7), ('y', 8)])
         >>>
 
     """
-
-    must_execute = True
-
-    def __exit__(self,*args):
-        retcode = super(CaptureOrderedLocals,self).__exit__(*args)
-        frame = self._get_context_frame()
-        local_names = []
-        for (op,arg) in self.bytecode.code:
-           if op in (STORE_FAST,STORE_NAME,):
-               if arg not in local_names:
-                   local_names.append(arg)
-        self.locals = [(nm,frame.f_locals[nm]) for nm in local_names]
-        return retcode
+    from collections import OrderedDict as dest_type
 
 
 class CaptureModifiedLocals(WithHack):
@@ -480,7 +469,7 @@ class xargs(CaptureOrderedLocals):
     def __exit__(self,*args):
         retcode = super(xargs,self).__exit__(*args)
         args_ = [arg for arg in self.__args]
-        args_.extend([arg for (nm,arg) in self.locals])
+        args_.extend([arg for (nm,arg) in self.locals.items()])
         retval = self.__func(*args_,**self.__kwds)
         self._run_as_clause(retval)
         return retcode
