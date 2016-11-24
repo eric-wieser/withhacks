@@ -46,16 +46,17 @@ __version__ = "%d.%d.%d%s" % (__ver_major__,__ver_minor__,
                               __ver_patch__,__ver_sub__)
 
 import sys
-import new
+import types
 import copy
+import inspect
+import bytecode
+
 try:
     import threading
 except ImportError:
     import dummy_threading as threading
 
-
-from withhacks.byteplay import *
-from withhacks.frameutils import *
+from withhacks.frameutils import load_name, extract_code, inject_trace_func
 
 
 class _ExitContext(Exception):
@@ -167,7 +168,7 @@ class CaptureBytecode(WithHack):
     def __init__(self):
         self.__bc_start = None
         self.bytecode = None
-        self.as_name = None
+        self._as_clause = None
         super(CaptureBytecode,self).__init__()
 
     def __enter__(self):
@@ -176,27 +177,69 @@ class CaptureBytecode(WithHack):
 
     def __exit__(self,*args):
         frame = self._get_context_frame()
-        bytecode = extract_code(frame,self.__bc_start,frame.f_lasti)
-        #print bytecode.code
-        #  Remove code setting up the with-statement block.
-        while bytecode.code[0][0] != SETUP_FINALLY:
-            bytecode.code = bytecode.code[1:]
-        bytecode.code = bytecode.code[1:]
-        #  If the with-statement has an "as" clause, capture the name
-        #  and remove the setup code.
-        if bytecode.code[0][0] in (LOAD_FAST,LOAD_NAME,LOAD_DEREF,LOAD_GLOBAL):
-            if bytecode.code[0][1].startswith("_["):
-                while bytecode.code[0][0] not in (STORE_FAST,STORE_NAME,):
-                    bytecode.code = bytecode.code[1:]
-                self.as_name = bytecode.code[0][1]
-                bytecode.code = bytecode.code[1:]
-        #  Remove code tearing down the with-statement block
-        while bytecode.code[-1][0] != POP_BLOCK:
-            bytecode.code = bytecode.code[:-1]
-        bytecode.code = bytecode.code[:-1]
-        #  OK, ready!
-        self.bytecode = bytecode
+        bc = extract_code(frame,self.__bc_start,frame.f_lasti)
+
+        # Remove code setting up the with-statement block.
+        while not isinstance(bc[0], bytecode.instr.BaseInstr) or bc[0].name != 'SETUP_WITH':
+            bc[:] = bc[1:]
+        bc[:] = bc[1:]
+
+        # extract code that belongs to the as clause
+        as_clause = copy.copy(bc)
+        as_clause[:] = []
+        for i, instr in enumerate(bc):
+            as_clause.append(instr)
+            if instr.name.startswith('STORE') or instr.name == 'POP_TOP':
+                break
+        bc[:] = bc[i+1:]
+        self._as_clause = as_clause
+
+        # remove code tearing down the with-statement block
+        while not isinstance(bc[-1], bytecode.instr.BaseInstr) or bc[-1].name != 'POP_BLOCK':
+            bc[:] = bc[:-1]
+        bc[:] = bc[:-1]
+
+        # save the trimmed bytecode
+        self.bytecode = bc
         return super(CaptureBytecode,self).__exit__(*args)
+
+
+
+    def _change_lookups(self, code, *, args=(), locals=()):
+        """
+        Switch name access opcodes as appropriate.
+        Any new locals are local to the function; existing locals
+        are manipulated using LOAD/STORE/DELETE_NAME.
+
+        TODO: does this work for STORE_FAST, DELETE_FAST?
+        """
+        for instr in code:
+            if not isinstance(instr, bytecode.instr.BaseInstr):
+                continue
+            if instr.name in ('LOAD_FAST','LOAD_DEREF','LOAD_NAME','LOAD_GLOBAL'):
+                if instr.arg in args:
+                    instr.name = 'LOAD_FAST'
+                elif instr.name in ('LOAD_FAST','LOAD_DEREF',):
+                    if instr.arg in locals:
+                        instr.name = 'LOAD_NAME'
+                    else:
+                        instr.name = 'LOAD_FAST'
+            elif instr.name in ('STORE_FAST','STORE_DEREF','STORE_NAME','STORE_GLOBAL'):
+                if instr.arg in args:
+                    instr.name = 'STORE_FAST'
+                elif instr.name in ('STORE_FAST','STORE_DEREF',):
+                    if instr.arg in locals:
+                        instr.name = 'STORE_NAME'
+                    else:
+                        instr.name = 'STORE_FAST'
+            elif instr.name in ('DELETE_FAST','DELETE_NAME','DELETE_GLOBAL'):
+                if instr.arg in args:
+                    instr.name = 'DELETE_FAST'
+                elif instr.name in ('DELETE_FAST',):
+                    if instr.arg in locals:
+                        instr.name = 'DELETE_NAME'
+                    else:
+                        instr.name = 'DELETE_FAST'
 
 
 class CaptureFunction(CaptureBytecode):
@@ -237,48 +280,23 @@ class CaptureFunction(CaptureBytecode):
     def __exit__(self,*args):
         frame = self._get_context_frame()
         retcode = super(CaptureFunction,self).__exit__(*args)
-        funcode = copy.deepcopy(self.bytecode)
+        funcode = copy.copy(self.bytecode)
         #  Ensure it's a properly formed func by always returning something
-        funcode.code.append((LOAD_CONST,None))
-        funcode.code.append((RETURN_VALUE,None))
-        #  Switch name access opcodes as appropriate.
-        #  Any new locals are local to the function; existing locals
-        #  are manipulated using LOAD/STORE/DELETE_NAME.
-        for (i,(op,arg)) in enumerate(funcode.code):
-            if op in (LOAD_FAST,LOAD_DEREF,LOAD_NAME,LOAD_GLOBAL):
-                if arg in self.__args:
-                    op = LOAD_FAST
-                elif op in (LOAD_FAST,LOAD_DEREF,):
-                    if arg in frame.f_locals:
-                        op = LOAD_NAME
-                    else:
-                        op = LOAD_FAST
-            elif op in (STORE_FAST,STORE_DEREF,STORE_NAME,STORE_GLOBAL):
-                if arg in self.__args:
-                    op = STORE_FAST
-                elif op in (STORE_FAST,STORE_DEREF,):
-                    if arg in frame.f_locals:
-                        op = STORE_NAME
-                    else:
-                        op = STORE_FAST
-            elif op in (DELETE_FAST,DELETE_NAME,DELETE_GLOBAL):
-                if arg in self.__args:
-                    op = DELETE_FAST
-                elif op in (DELETE_FAST,):
-                    if arg in frame.f_locals:
-                        op = DELETE_NAME
-                    else:
-                        op = DELETE_FAST
-            funcode.code[i] = (op,arg)
+        funcode.append(bytecode.Instr('LOAD_CONST', None))
+        funcode.append(bytecode.Instr('RETURN_VALUE'))
+        self._change_lookups(funcode, args=self.__args, locals=frame.f_locals)
+
         #  Create the resulting function object
-        funcode.args = self.__args
-        funcode.varargs = self.__varargs
-        funcode.varkwargs = self.__varkwargs
+        # funcode.args = self.__args
+        # funcode.varargs = self.__varargs
+        # funcode.varkwargs = self.__varkwargs
         funcode.name = self.__name
+        funcode.argnames = self.__args
+        funcode.argcount = len(self.__args)
         gs = self._get_context_frame().f_globals
         nm = self.__name
         defs = self.__argdefs
-        self.function = new.function(funcode.to_code(),gs,nm,defs)
+        self.function = types.FunctionType(funcode.to_code(),gs,nm,defs)
         return retcode
 
 
