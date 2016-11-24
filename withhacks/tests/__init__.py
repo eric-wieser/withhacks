@@ -132,13 +132,13 @@ class TestMisc(unittest.TestCase):
         readme = os.path.join(dirname(dirname(dirname(__file__))),"README.txt")
         if not os.path.isfile(readme):
             f = open(readme,"wb")
-            f.write(withhacks.__doc__)
+            f.write(withhacks.__doc__.encode('utf8'))
             f.close()
         else:
             f = open(readme,"rb")
             if f.read() != withhacks.__doc__:
                 f.close()
                 f = open(readme,"wb")
-                f.write(withhacks.__doc__)
+                f.write(withhacks.__doc__.encode('utf8'))
                 f.close()
 
