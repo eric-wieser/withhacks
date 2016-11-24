@@ -127,6 +127,14 @@ class TestCaptureFunction(unittest.TestCase):
             TestCaptureFunction("test_capture").run()
         c.function()
 
+    def test_capture_varargs(self):
+        with CaptureFunction(("kwargs",), varkwargs=True) as c:
+            return kwargs
+        self.assertEquals(c.function(a=1),{'a': 1})
+        with CaptureFunction(("args",), varargs=True) as c:
+            return args
+        self.assertEquals(c.function(1, 2, 3), (1, 2, 3))
+
 
 class TestMisc(unittest.TestCase):
 

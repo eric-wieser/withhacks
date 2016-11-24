@@ -343,6 +343,13 @@ class CaptureFunction(CaptureBytecode):
         funcode.name = self.__name
         funcode.argnames = self.__args
         funcode.argcount = len(self.__args)
+        if self.__varargs:
+            funcode.flags |= inspect.CO_VARARGS
+            funcode.argcount -= 1
+        if self.__varkwargs:
+            funcode.flags |= inspect.CO_VARKEYWORDS
+            funcode.argcount -= 1
+
         gs = self._get_context_frame().f_globals
         nm = self.__name
         defs = self.__argdefs
