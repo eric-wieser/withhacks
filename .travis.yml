@@ -9,7 +9,7 @@ install:
 
 script:
   # timid is needed because we use sys.settrace
-  - coverage run --timid setup.py test
+  - coverage run --timid --source withhacks setup.py test
 
 after_success:
   - codecov
