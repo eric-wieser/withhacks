@@ -32,6 +32,7 @@ setup(name=NAME,
       license=LICENSE,
       keywords=KEYWORDS,
       packages=["withhacks","withhacks.tests"],
-      install_requires=['bytecode']
+      install_requires=['bytecode'],
+      test_suite='withhacks.tests'
      )
 
